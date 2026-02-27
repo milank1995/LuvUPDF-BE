@@ -30,6 +30,7 @@ jobs:
           echo "LETSENCRYPT_HOST=${{ secrets.LETSENCRYPT_HOST }}" >> .env
           echo "VIRTUAL_HOST=${{ secrets.VIRTUAL_HOST }}" >> .env
           echo "VIRTUAL_PORT=${{ secrets.VIRTUAL_PORT }}" >> .env
+          echo "PORT=${{ secrets.PORT }}" >> .env
 
 
       - name: Install ssh
