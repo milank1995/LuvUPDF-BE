@@ -1,0 +1,11 @@
+services:
+  pdf_backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: smitkukadiyabvminfotech/playstore_frontend:pdf_backend
+    env_file:
+      - .env
+    expose:
+      - 8002
+    restart: always
