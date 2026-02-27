@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:22-slim
 
 RUN apk add --no-cache qpdf
 
@@ -9,6 +9,6 @@ RUN npm install
 
 COPY . .
 
-EXPOSE 8001
+EXPOSE 8002
 
 CMD ["node", "src/index.js"]

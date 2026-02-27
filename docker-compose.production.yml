@@ -1,0 +1,55 @@
+services:
+  pdf_backend:
+    image: smitkukadiyabvminfotech/playstore_frontend:pdf_backend
+    env_file:
+      - .env
+    expose:
+      - 8002
+    restart: always
+    labels:
+      - "nginx.proxy=true"
+      - "nginx.proxy.services.web.loadbalancer.server.port=8002"
+    mem_limit: 500m
+    cpu_count: 1
+    networks:
+      - existing_network
+
+
+  nginx-proxy:
+    container_name: nginx-proxy
+    image: nginxproxy/nginx-proxy
+    restart: on-failure:10
+    volumes:
+      - certs:/etc/nginx/certs
+      - html:/usr/share/nginx/html
+      - vhost:/etc/nginx/vhost.d
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    ports:
+      - 443:443
+      - 80:80
+
+  acme-companion:
+    image: nginxproxy/acme-companion
+    restart: on-failure:10
+    environment:
+      - DEFAULT_EMAIL=smitk85143@gmail.com
+      - NGINX_PROXY_CONTAINER=nginx-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - certs:/etc/nginx/certs
+      - html:/usr/share/nginx/html
+      - vhost:/etc/nginx/vhost.d
+      - acme:/etc/acme.sh
+    depends_on:
+      - nginx-proxy
+
+volumes:
+  certs:
+  html:
+  vhost:
+  acme:
+
+networks:
+  existing_network:
+    external: true
+    name: appwatch-ninja_default
