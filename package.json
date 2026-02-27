@@ -1,0 +1,26 @@
+{
+  "name": "pdf-manipulation-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon ./src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "cloudinary": "^2.9.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "mongoose": "^9.2.2",
+    "multer": "^2.0.2",
+    "nodemon": "^3.1.14",
+    "pdf-encrypt-decrypt": "^1.0.0",
+    "pdf-lib": "^1.17.1",
+    "reflect-metadata": "^0.2.2"
+  }
+}
