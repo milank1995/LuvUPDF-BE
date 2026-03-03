@@ -3,21 +3,12 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
-import { PDFDocument } from 'pdf-lib';
+import { uploadToGridFS, downloadFromGridFS, getAllFiles, deleteFromGridFS } from '../Utils/Gridfs.js';
 
 const router = express.Router();
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/');
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
-    }
-});
-
 const upload = multer({
-    storage,
+    storage: multer.memoryStorage(),
     fileFilter: (req, file, cb) => {
         if (file.mimetype === 'application/pdf') {
             cb(null, true);
@@ -27,87 +18,63 @@ const upload = multer({
     }
 });
 
-
-
-router.post('/upload-pdf', upload.single('file'), (req, res) => {
+router.post('/upload-pdf', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ message: 'No file uploaded' });
         }
 
-        // const url = `http://localhost:${process.env.PORT || 8001}/uploads/${req.file.filename}`;
-        const url = `${process.env.API_URL || 8001}/uploads/${req.file.filename}`;
-        const pdf = { url };
+        const expireMinutes = parseInt(process.env.PDF_EXPIRE_MINUTES, 10) || 5;
+        const expiresAt = new Date(Date.now() + expireMinutes * 60 * 1000);
+        const fileId = await uploadToGridFS(req.file.buffer, req.file.originalname, { expiresAt });
 
-        res.json({ message: 'PDF uploaded successfully', pdf });
+        if (!fileId) {
+            return res.status(500).json({ message: 'Failed to upload PDF to database' });
+        }
+
+        res.json({ message: 'PDF uploaded successfully', fileId });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
-})
-
-function isPdfEncrypted(filePath) {
-    return new Promise((resolve, reject) => {
-        exec(`qpdf --show-encryption "${filePath}"`, (error, stdout, stderr) => {
-            if (stdout.includes("File is not encrypted")) {
-                resolve(false);
-            } else {
-                resolve(true);
-            }
-        });
-    });
-}
+});
 
 function encryptPDF(inputPath, outputPath, password) {
     return new Promise((resolve, reject) => {
-        const command = `qpdf --encrypt ${password} ${password} 256 -- "${inputPath}" "${outputPath}"`;
-
+        const command = `qpdf --encrypt "${password}" "${password}" 256 -- "${inputPath}" "${outputPath}"`;
         exec(command, (error, stdout, stderr) => {
             if (error) {
-                console.error("Encryption Error:", stderr);
-                return reject(error);
+                return reject(new Error(stderr || "Encryption failed"));
             }
-            resolve("PDF Encrypted Successfully");
+            resolve();
         });
     });
 }
 
 function decryptPDF(inputPath, outputPath, password) {
     return new Promise((resolve, reject) => {
-        const command = `qpdf --password=${password} --decrypt "${inputPath}" "${outputPath}"`;
+        const command = `qpdf --password="${password}" --decrypt "${inputPath}" "${outputPath}"`;
 
         exec(command, (error, stdout, stderr) => {
             if (error) {
-                console.error("Decryption Error:", stderr);
-                return reject(error);
+                if (stderr?.toLowerCase().includes("invalid password")) {
+                    return reject(new Error("INVALID_PASSWORD"));
+                }
+                return reject(new Error(stderr || "Decryption failed"));
             }
-            resolve("PDF Decrypted Successfully");
+
+            resolve();
         });
     });
 }
 
 router.get('/get-all-pdf', async (req, res) => {
     try {
-        if (!fs.existsSync('uploads')) {
-            fs.mkdirSync('uploads', { recursive: true });
-        }
-        
-        const files = fs.readdirSync('uploads/');
+        const files = await getAllFiles();
 
-        const pdfFiles = files.filter(f => f.endsWith('.pdf'));
-
-        const data = await Promise.all(
-            pdfFiles.map(async (file) => {
-                const fullPath = path.join('uploads', file);
-                const isLocked = await isPdfEncrypted(fullPath);
-
-                return {
-                    // url: `http://localhost:${process.env.PORT || 8001}/uploads/${file}`,
-                    url: `${process.env.API_URL || 8001}/uploads/${file}`,
-                    public_id: file,
-                    isLocked
-                };
-            })
-        );
+        const data = await Promise.all(files.map(async file => ({
+            url: `${process.env.API_URL || 'http://localhost:8001'}/api/pdf/${file._id}`,
+            filename: file.filename
+        })));
 
         res.json({ message: 'PDF fetch successful', data });
     } catch (error) {
@@ -116,82 +83,165 @@ router.get('/get-all-pdf', async (req, res) => {
 });
 
 router.post('/lock-pdf', async (req, res) => {
+    const { fileId, password } = req.body;
+
+    if (!fileId || !password)
+        return res.status(400).json({ message: "fileId and password required" });
+
+    const tempDir = path.join("uploads", fileId);
+
     try {
-        const { public_id, password } = req.body;
+        await fs.promises.mkdir(tempDir, { recursive: true });
 
-        if (!public_id || !password) {
-            return res.status(400).json({ message: 'public_id and password required' });
-        }
+        const inputPath = path.join(tempDir, "input.pdf");
+        const outputPath = path.join(tempDir, "locked.pdf");
 
-        const inputPath = path.join('uploads', public_id);
+        const downloadStream = downloadFromGridFS(fileId);
+        const writeStream = fs.createWriteStream(inputPath);
 
-        if (!fs.existsSync(inputPath)) {
-            return res.status(404).json({ message: 'PDF file not found' });
-        }
-
-        const outputPath = path.join('uploads', public_id.replace('.pdf', '-locked.pdf'));
+        await new Promise((resolve, reject) => {
+            downloadStream.pipe(writeStream);
+            writeStream.on("finish", resolve);
+            writeStream.on("error", reject);
+            downloadStream.on("error", reject);
+        });
 
         await encryptPDF(inputPath, outputPath, password);
-        fs.unlinkSync(inputPath);
 
-        res.json({ message: 'PDF locked successfully' });
+        const lockedBuffer = await fs.promises.readFile(outputPath);
+
+        const files = await getAllFiles();
+        const originalFile = files.find(
+            f => f._id.toString() === fileId
+        );
+
+        const newFilename =
+            originalFile.filename.replace(".pdf", "-locked.pdf");
+
+        const newFileId =
+            await uploadToGridFS(lockedBuffer, newFilename);
+
+        await deleteFromGridFS(fileId);
+
+        res.json({
+            message: "PDF locked successfully",
+            fileId: newFileId
+        });
+
     } catch (error) {
         res.status(500).json({ message: error.message });
+    } finally {
+        await fs.promises.rm(tempDir, {
+            recursive: true,
+            force: true
+        });
     }
 });
 
-router.post('/unlocked-pdf', async (req, res) => {
+router.post('/unlock-pdf', async (req, res) => {
+    const { fileId, password } = req.body;
+
+    if (!fileId || !password)
+        return res.status(400).json({ message: "fileId and password required" });
+
+    const tempDir = path.join("uploads", fileId);
+
     try {
-        const { public_id, password } = req.body;
+        await fs.promises.mkdir(tempDir, { recursive: true });
 
-        if (!public_id || !password) {
-            return res.status(400).json({ message: 'public_id and password required' });
-        }
+        const inputPath = path.join(tempDir, "input.pdf");
+        const outputPath = path.join(tempDir, "unlocked.pdf");
 
-        const inputPath = path.join('uploads', public_id);
+        const downloadStream = downloadFromGridFS(fileId);
+        const writeStream = fs.createWriteStream(inputPath);
 
-        if (!fs.existsSync(inputPath)) {
-            return res.status(404).json({ message: 'PDF file not found' });
-        }
+        await new Promise((resolve, reject) => {
+            downloadStream.pipe(writeStream);
+            writeStream.on("finish", resolve);
+            writeStream.on("error", reject);
+            downloadStream.on("error", reject);
+        });
 
-        const outputFilename = public_id.includes('-locked')
-            ? public_id.replace('-locked', '')
-            : public_id.replace('.pdf', '-unlocked.pdf');
-        const outputPath = path.join('uploads', outputFilename);
+        await decryptPDF(inputPath, outputPath, password);
 
-        try {
-            await decryptPDF(inputPath, outputPath, password);
-            fs.unlinkSync(inputPath);
+        const unlockedBuffer =
+            await fs.promises.readFile(outputPath);
 
-            res.json({
-                message: 'PDF unlocked successfully',
-                // url: `http://localhost:${process.env.PORT || 8001}/uploads/${path.basename(outputPath)}`
-                url: `${process.env.API_URL || 8001}/uploads/${path.basename(outputPath)}`
-            });
-        } catch (error) {
-            res.status(401).json({ message: error.message });
-        }
+        const files = await getAllFiles();
+        const originalFile =
+            files.find(f => f._id.toString() === fileId);
+
+        const newFilename =
+            originalFile.filename.replace("-locked", "");
+
+        const newFileId =
+            await uploadToGridFS(unlockedBuffer, newFilename);
+
+        await deleteFromGridFS(fileId);
+
+        res.json({
+            message: "PDF unlocked successfully",
+            fileId: newFileId
+        });
+
     } catch (error) {
-        res.status(500).json({ message: error.message });
+
+        if (error.message === "INVALID_PASSWORD") {
+            return res.status(401).json({
+                message: "Incorrect password"
+            });
+        }
+
+        res.status(500).json({
+            message: error.message
+        });
+
+    } finally {
+        await fs.promises.rm(tempDir, {
+            recursive: true,
+            force: true
+        });
     }
 });
 
+router.get('/pdf/:fileId', async (req, res) => {
+    try {
+        const { fileId } = req.params;
+        const downloadStream = downloadFromGridFS(fileId);
+
+        res.set('Content-Type', 'application/pdf');
+
+        downloadStream.on('error', (error) => {
+            console.error('GridFS download error:', error);
+            if (!res.headersSent) {
+                res.status(404).json({ message: 'PDF file not found' });
+            }
+        });
+
+        downloadStream.pipe(res);
+    } catch (error) {
+        console.error('Route error:', error);
+        res.status(500).json({ message: error.message });
+    }
+});
 
 router.post('/download-pdf', async (req, res) => {
     try {
-        const { public_id } = req.body;
-        
-        if (!public_id) {
-            return res.status(400).json({ message: 'public_id required' });
+        const { fileId } = req.body;
+
+        if (!fileId) {
+            return res.status(400).json({ message: 'fileId required' });
         }
 
-        const filePath = path.resolve('uploads', public_id);
-        
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json({ message: 'PDF file not found' });
-        }
+        const downloadStream = downloadFromGridFS(fileId);
+        res.set('Content-Type', 'application/pdf');
+        res.set('Content-Disposition', 'attachment');
 
-        res.download(filePath, public_id);
+        downloadStream.pipe(res);
+
+        downloadStream.on('error', () => {
+            res.status(404).json({ message: 'PDF file not found' });
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
