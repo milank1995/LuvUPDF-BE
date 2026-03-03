@@ -2,7 +2,6 @@ import "dotenv/config";
 import "reflect-metadata";
 import express from "express";
 import cors from "cors";
-import cookieParser from "cookie-parser";
 import router from "./Routes/index.js";
 import { connect } from "./Utils/DbConnect.js";
 import { initCronJobs } from "./Utils/RemovePdfCron.js";
@@ -13,12 +12,11 @@ async function createServer() {
     const app = express();
 
     app.use(cors({
-        origin: true,
+        origin: process.env.API_URL,
         credentials: true,
     }));
     app.use(express.json());
     app.use(express.urlencoded({ extended: true }));
-    app.use(cookieParser());
 
     app.use('/api', router);
 
