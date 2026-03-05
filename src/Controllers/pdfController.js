@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { Readable } from 'stream';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from "crypto";
@@ -39,6 +40,36 @@ export const getAllPDF = async (req, res) => {
 
         res.json({ message: 'PDF fetch successful', data });
     } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+}
+
+export const combinedLockPDF = async (req, res) => {
+    const { password } = req.body;
+
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    if (!password) {
+        return res.status(400).json({ message: 'Password is required' });
+    }
+
+    try {
+        const lockedBuffer = await pdfProcessLimiter(() => encryptPDFStream(req.file.buffer, password));
+
+        const filename = req.file.originalname.replace(".pdf", "-locked.pdf");
+
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Length': lockedBuffer.length
+        });
+
+        res.send(lockedBuffer);
+
+    } catch (error) {
+        console.error("Combined Lock PDF error:", error);
         res.status(500).json({ message: error.message });
     }
 }
@@ -253,6 +284,40 @@ function encryptPDF(inputPath, outputPath, password) {
             }
             resolve();
         });
+    });
+}
+
+function encryptPDFStream(inputBuffer, password) {
+    return new Promise((resolve, reject) => {
+        const qpdf = spawn('qpdf', [
+            '--encrypt', password, password, '256',
+            '--', '-', '-'
+        ]);
+
+        let stdout = [];
+        let stderr = '';
+
+        qpdf.stdout.on('data', (data) => stdout.push(data));
+        qpdf.stderr.on('data', (data) => stderr += data);
+
+        qpdf.on('error', (err) => {
+            if (err.code === 'ENOENT') {
+                reject(new Error("qpdf is not installed on the system. Please install it to use this feature (winget install qpdf)."));
+            } else {
+                reject(err);
+            }
+        });
+
+        qpdf.on('close', (code) => {
+            if (code !== 0) {
+                return reject(new Error(stderr || "Encryption failed"));
+            }
+            resolve(Buffer.concat(stdout));
+        });
+
+        // Write input to stdin
+        const readable = Readable.from(inputBuffer);
+        readable.pipe(qpdf.stdin);
     });
 }
 
