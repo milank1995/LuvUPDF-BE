@@ -43,6 +43,46 @@ export const getAllPDF = async (req, res) => {
     }
 }
 
+export const combinedLockPDF = async (req, res) => {
+    const { password } = req.body;
+
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    if (!password) {
+        return res.status(400).json({ message: 'Password is required' });
+    }
+
+    const tempDir = path.join(os.tmpdir(), 'pdf-lock-' + randomUUID());
+    const inputPath = path.join(tempDir, 'input.pdf');
+    const outputPath = path.join(tempDir, 'locked.pdf');
+
+    try {
+        await fs.promises.mkdir(tempDir, { recursive: true });
+        await fs.promises.writeFile(inputPath, req.file.buffer);
+
+        await pdfProcessLimiter(() => encryptPDF(inputPath, outputPath, password));
+
+        const lockedBuffer = await fs.promises.readFile(outputPath);
+        const filename = req.file.originalname.replace('.pdf', '-locked.pdf');
+
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Length': lockedBuffer.length
+        });
+
+        res.send(lockedBuffer);
+
+    } catch (error) {
+        console.error('Combined Lock PDF error:', error);
+        res.status(500).json({ message: error.message });
+    } finally {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+}
+
 export const lockPDF = async (req, res) => {
 
     const { fileId, password } = req.body;
@@ -255,6 +295,7 @@ function encryptPDF(inputPath, outputPath, password) {
         });
     });
 }
+
 
 function decryptPDF(inputPath, outputPath, password) {
     return new Promise((resolve, reject) => {
