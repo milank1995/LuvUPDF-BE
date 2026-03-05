@@ -33,6 +33,7 @@ jobs:
           echo "PORT=${{ secrets.PORT }}" >> .env
           echo "API_URL=${{ secrets.API_URL }}" >> .env
           echo "FRONTEND_URL=${{ secrets.FRONTEND_URL }}" >> .env
+          echo "MAX_FILE_SIZE_MB=${{ secrets.MAX_FILE_SIZE_MB }}" >> .env
           echo "MONGO_URL=${{ secrets.MONGO_URL }}" >> .env
 
 
