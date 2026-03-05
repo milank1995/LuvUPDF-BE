@@ -1,5 +1,4 @@
 import fs from 'fs';
-import { Readable } from 'stream';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from "crypto";
@@ -55,10 +54,18 @@ export const combinedLockPDF = async (req, res) => {
         return res.status(400).json({ message: 'Password is required' });
     }
 
-    try {
-        const lockedBuffer = await pdfProcessLimiter(() => encryptPDFStream(req.file.buffer, password));
+    const tempDir = path.join(os.tmpdir(), 'pdf-lock-' + randomUUID());
+    const inputPath = path.join(tempDir, 'input.pdf');
+    const outputPath = path.join(tempDir, 'locked.pdf');
 
-        const filename = req.file.originalname.replace(".pdf", "-locked.pdf");
+    try {
+        await fs.promises.mkdir(tempDir, { recursive: true });
+        await fs.promises.writeFile(inputPath, req.file.buffer);
+
+        await pdfProcessLimiter(() => encryptPDF(inputPath, outputPath, password));
+
+        const lockedBuffer = await fs.promises.readFile(outputPath);
+        const filename = req.file.originalname.replace('.pdf', '-locked.pdf');
 
         res.set({
             'Content-Type': 'application/pdf',
@@ -69,8 +76,10 @@ export const combinedLockPDF = async (req, res) => {
         res.send(lockedBuffer);
 
     } catch (error) {
-        console.error("Combined Lock PDF error:", error);
+        console.error('Combined Lock PDF error:', error);
         res.status(500).json({ message: error.message });
+    } finally {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
 }
 
@@ -287,39 +296,6 @@ function encryptPDF(inputPath, outputPath, password) {
     });
 }
 
-function encryptPDFStream(inputBuffer, password) {
-    return new Promise((resolve, reject) => {
-        const qpdf = spawn('qpdf', [
-            '--encrypt', password, password, '256',
-            '--', '-', '-'
-        ]);
-
-        let stdout = [];
-        let stderr = '';
-
-        qpdf.stdout.on('data', (data) => stdout.push(data));
-        qpdf.stderr.on('data', (data) => stderr += data);
-
-        qpdf.on('error', (err) => {
-            if (err.code === 'ENOENT') {
-                reject(new Error("qpdf is not installed on the system. Please install it to use this feature (winget install qpdf)."));
-            } else {
-                reject(err);
-            }
-        });
-
-        qpdf.on('close', (code) => {
-            if (code !== 0) {
-                return reject(new Error(stderr || "Encryption failed"));
-            }
-            resolve(Buffer.concat(stdout));
-        });
-
-        // Write input to stdin
-        const readable = Readable.from(inputBuffer);
-        readable.pipe(qpdf.stdin);
-    });
-}
 
 function decryptPDF(inputPath, outputPath, password) {
     return new Promise((resolve, reject) => {
