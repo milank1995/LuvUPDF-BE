@@ -6,9 +6,14 @@ let bucket;
 export const initGridFS = () => {
     const db = mongoose.connection.db;
     bucket = new GridFSBucket(db, { bucketName: 'pdfs' });
-    
-    db.collection('pdfs.files').createIndex({ 'metadata.expiresAt': 1 });
-    
+
+    db.collection('pdfs.files').dropIndex('metadata.expiresAt_1')
+        .catch(() => { }) // Ignore if index doesn't exist
+        .finally(() => {
+            db.collection('pdfs.files').createIndex({ 'metadata.expiresAt': 1 })
+                .catch(err => console.error("Error creating index:", err));
+        });
+
     return bucket;
 };
 
