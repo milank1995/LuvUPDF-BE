@@ -4,7 +4,7 @@ import { initGridFS } from "./Gridfs.js";
 export const connect = async () => {
     try {
         await mongoose.connect(process.env.MONGO_URL);
-        initGridFS();
+        await initGridFS();
         console.log("DB & GridFS initialized");
     } catch (error) {
         console.error("MongoDB connection error:", error);

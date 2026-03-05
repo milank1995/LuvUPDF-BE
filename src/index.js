@@ -4,11 +4,11 @@ import express from "express";
 import cors from "cors";
 import router from "./Routes/index.js";
 import { connect } from "./Utils/DbConnect.js";
-// import { initCronJobs } from "./Utils/RemovePdfCron.js";
+import { initCronJobs } from "./Utils/RemovePdfCron.js";
 
 async function createServer() {
-    connect();
-    // initCronJobs();
+    await connect();
+    initCronJobs();
     const app = express();
 
     app.use(cors({

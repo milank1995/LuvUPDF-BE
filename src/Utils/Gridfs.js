@@ -3,23 +3,28 @@ import { GridFSBucket } from 'mongodb';
 
 let bucket;
 
-export const initGridFS = () => {
+export const initGridFS = async () => {
     const db = mongoose.connection.db;
     bucket = new GridFSBucket(db, { bucketName: 'pdfs' });
 
-    db.collection('pdfs.files').dropIndex('metadata.expiresAt_1')
-        .catch(() => { }) // Ignore if index doesn't exist
-        .finally(() => {
-            db.collection('pdfs.files').createIndex({ 'metadata.expiresAt': 1 })
-                .catch(err => console.error("Error creating index:", err));
-        });
+    try {
+        await db.collection('pdfs.files').createIndex({ 'metadata.expiresAt': 1 });
+    } catch (error) {
+        if (error.code === 85) { // IndexOptionsConflict
+            console.log("Index conflict detected for PdfStore. Dropping and recreating index...");
+            await db.collection('pdfs.files').dropIndex('metadata.expiresAt_1');
+            await db.collection('pdfs.files').createIndex({ 'metadata.expiresAt': 1 });
+        } else {
+            console.error("Error creating index for pdfs:", error.message);
+        }
+    }
 
     return bucket;
 };
 
 export const getBucket = () => {
     if (!bucket) {
-        bucket = initGridFS();
+        throw new Error("GridFS bucket not initialized. Call initGridFS first.");
     }
     return bucket;
 };

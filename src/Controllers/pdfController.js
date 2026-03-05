@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { randomUUID } from "crypto";
 import { spawn } from 'child_process';
 import { uploadToGridFS, downloadFromGridFS, getAllFiles, deleteFromGridFS, getFileById } from '../Utils/Gridfs.js';
@@ -51,7 +52,7 @@ export const lockPDF = async (req, res) => {
             message: "fileId and password required"
         });
 
-    const tempDir = path.join("uploads", randomUUID());
+    const tempDir = path.join(os.tmpdir(), "pdf-task-" + randomUUID());
 
     const inputPath = path.join(tempDir, "input.pdf");
     const outputPath = path.join(tempDir, "locked.pdf");
@@ -68,11 +69,7 @@ export const lockPDF = async (req, res) => {
             writeStream.on("finish", resolve);
             writeStream.on("error", reject);
             downloadStream.on('error', (err) => {
-                if (!res.headersSent) {
-                    res.status(404).json({ message: err.message });
-                } else {
-                    res.end();
-                }
+                reject(err);
             });
         });
 
@@ -80,6 +77,10 @@ export const lockPDF = async (req, res) => {
 
         const lockedBuffer = await fs.promises.readFile(outputPath);
         const originalFile = await getFileById(fileId);
+
+        if (!originalFile) {
+            throw new Error("Original file not found");
+        }
 
         const newFilename = originalFile.filename.replace(".pdf", "-locked.pdf");
 
@@ -95,6 +96,7 @@ export const lockPDF = async (req, res) => {
         });
 
     } catch (error) {
+        console.error("Lock PDF error:", error);
         return res.status(500).json({
             message: error.message
         });
@@ -113,7 +115,7 @@ export const unlockPDF = async (req, res) => {
     if (!fileId || !password)
         return res.status(400).json({ message: "fileId and password required" });
 
-    const tempDir = path.join("uploads", randomUUID());
+    const tempDir = path.join(os.tmpdir(), "pdf-task-" + randomUUID());
 
     const inputPath = path.join(tempDir, "input.pdf");
     const outputPath = path.join(tempDir, "unlocked.pdf");
@@ -129,9 +131,6 @@ export const unlockPDF = async (req, res) => {
             writeStream.on("finish", resolve);
             writeStream.on("error", reject);
             downloadStream.on("error", (err) => {
-                if (!res.headersSent) {
-                    res.status(404).json({ message: err.message });
-                }
                 reject(err);
             });
         });
@@ -142,9 +141,15 @@ export const unlockPDF = async (req, res) => {
 
         const file = await getFileById(fileId);
 
+        if (!file) {
+            throw new Error("Original file not found");
+        }
+
         const newFilename = file.filename.replace("-locked", "");
 
-        const newFileId = await uploadToGridFS(unlockedBuffer, newFilename);
+        const expireMinutes = parseInt(process.env.PDF_EXPIRE_MINUTES, 10) || 5;
+        const expiresAt = new Date(Date.now() + expireMinutes * 60 * 1000);
+        const newFileId = await uploadToGridFS(unlockedBuffer, newFilename, { expiresAt });
 
         await deleteFromGridFS(fileId);
 
@@ -154,6 +159,7 @@ export const unlockPDF = async (req, res) => {
         });
 
     } catch (error) {
+        console.error("Unlock PDF error:", error);
         if (res.headersSent) {
             return;
         }
@@ -229,6 +235,14 @@ function encryptPDF(inputPath, outputPath, password) {
             '--encrypt', password, password, '256',
             '--', inputPath, outputPath
         ]);
+
+        qpdf.on('error', (err) => {
+            if (err.code === 'ENOENT') {
+                reject(new Error("qpdf is not installed on the system. Please install it to use this feature (winget install qpdf)."));
+            } else {
+                reject(err);
+            }
+        });
 
         let stderr = '';
         qpdf.stderr.on('data', (data) => stderr += data);
