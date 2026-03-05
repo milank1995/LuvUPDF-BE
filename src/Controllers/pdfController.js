@@ -83,6 +83,51 @@ export const combinedLockPDF = async (req, res) => {
     }
 }
 
+export const combinedUnlockPDF = async (req, res) => {
+    const { password } = req.body;
+
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    if (!password) {
+        return res.status(400).json({ message: 'Password is required' });
+    }
+
+    const tempDir = path.join(os.tmpdir(), 'pdf-unlock-' + randomUUID());
+    const inputPath = path.join(tempDir, 'input.pdf');
+    const outputPath = path.join(tempDir, 'unlocked.pdf');
+
+    try {
+        await fs.promises.mkdir(tempDir, { recursive: true });
+        await fs.promises.writeFile(inputPath, req.file.buffer);
+
+        await pdfProcessLimiter(() => decryptPDF(inputPath, outputPath, password));
+
+        const unlockedBuffer = await fs.promises.readFile(outputPath);
+        const filename = req.file.originalname.replace(/\.pdf$/i, '-unlocked.pdf');
+
+        res.set({
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Length': unlockedBuffer.length
+        });
+
+        res.send(unlockedBuffer);
+
+    } catch (error) {
+        console.error('Combined Unlock PDF error:', error);
+
+        if (error.message === 'INVALID_PASSWORD') {
+            return res.status(401).json({ message: 'Incorrect password' });
+        }
+
+        res.status(500).json({ message: error.message });
+    } finally {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+}
+
 export const lockPDF = async (req, res) => {
 
     const { fileId, password } = req.body;
