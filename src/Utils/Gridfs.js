@@ -74,18 +74,22 @@ export const getFileById = async (fileId) => {
 export const cleanupExpiredFiles = async () => {
     const db = mongoose.connection.db;
     const filesCollection = db.collection('pdfs.files');
-    const chunksCollection = db.collection('pdfs.chunks');
-    
+    const bucket = getBucket();
+
     const expiredFiles = await filesCollection.find({
         'metadata.expiresAt': { $lte: new Date() }
-    }).toArray();
-    
-    if (expiredFiles.length === 0) return 0;
-    
-    const expiredIds = expiredFiles.map(f => f._id);
-    
-    await chunksCollection.deleteMany({ files_id: { $in: expiredIds } });
-    await filesCollection.deleteMany({ _id: { $in: expiredIds } });
-    
-    return expiredIds.length;
+    }).project({ _id: 1 }).toArray();
+
+    let deletedCount = 0;
+
+    for (const file of expiredFiles) {
+        try {
+            await bucket.delete(file._id);
+            deletedCount++;
+        } catch (err) {
+            console.error("Delete error:", err.message);
+        }
+    }
+
+    return deletedCount;
 };

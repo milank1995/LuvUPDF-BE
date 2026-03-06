@@ -312,7 +312,56 @@ export const downloadPDF = async (req, res) => {
     }
 }
 
+export const compressPDF = async (req, res) => {
+    const { mode = "medium" } = req.params;
 
+    if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    const tempDir = path.join(os.tmpdir(), "compress-pdf-" + randomUUID());
+    const inputPath = path.join(tempDir, "input.pdf");
+    const outputPath = path.join(tempDir, "compressed.pdf");
+    
+    try {
+        await fs.promises.mkdir(tempDir, { recursive: true });
+        await fs.promises.writeFile(inputPath, req.file.buffer);
+
+        const originalSize = req.file.buffer.length;
+
+        await pdfProcessLimiter(() => compressPDFFun(inputPath, outputPath, mode));
+
+        const compressedBuffer = await fs.promises.readFile(outputPath);
+        const compressedSize = compressedBuffer.length;
+        const reductionPercent = ((originalSize - compressedSize) / originalSize * 100).toFixed(2);
+
+        const newFilename = req.file.originalname.replace(".pdf", "-compressed.pdf");
+        const expireMinutes = parseInt(process.env.PDF_EXPIRE_MINUTES, 10) || 5;
+        const expiresAt = new Date(Date.now() + expireMinutes * 60 * 1000);
+        const fileId = await uploadToGridFS(compressedBuffer, newFilename, { expiresAt });
+
+        const pdfUrl = `${process.env.API_URL || 'http://localhost:8001'}/api/pdf/${fileId}`;
+        
+        res.json({
+            message: "PDF compressed successfully",
+            pdfUrl,
+            originalSize: formatFileSize(originalSize),
+            compressedSize: formatFileSize(compressedSize),
+            reductionPercent: `${reductionPercent}%`
+        });
+    } catch (error) {
+        console.error("Compress PDF error:", error);
+        if (res.headersSent) {
+            return;
+        }
+        res.status(500).json({ message: error.message });
+    } finally {
+        await fs.promises.rm(tempDir, {
+            recursive: true,
+            force: true
+        });
+    }
+}
 
 function encryptPDF(inputPath, outputPath, password) {
     return new Promise((resolve, reject) => {
@@ -365,3 +414,61 @@ function decryptPDF(inputPath, outputPath, password) {
         });
     });
 }
+
+function compressPDFFun(inputPath, outputPath, mode = "medium") {
+    return new Promise((resolve, reject) => {
+        const stats = fs.statSync(inputPath);
+        const fileSizeMB = stats.size / (1024 * 1024);
+
+        if (fileSizeMB < 2 && mode === "low") {
+            mode = "medium";
+        }
+
+        const modes = {
+            low: "/printer",      
+            medium: "/ebook",     
+            high: "/screen"       
+        };
+
+        const setting = modes[mode] || "/ebook";
+
+        const gs = spawn('gs', [
+            '-sDEVICE=pdfwrite',
+            '-dCompatibilityLevel=1.4',
+            `-dPDFSETTINGS=${setting}`,
+            '-dNOPAUSE',
+            '-dQUIET',
+            '-dBATCH',
+            '-dDetectDuplicateImages=true',
+            '-dCompressFonts=true',
+            '-r150',
+            `-sOutputFile=${outputPath}`,
+            inputPath
+        ]);
+
+        gs.on('error', (err) => {
+            if (err.code === 'ENOENT') {
+                reject(new Error("Ghostscript is not installed."));
+            } else {
+                reject(err);
+            }
+        });
+
+        let stderr = '';
+        gs.stderr.on('data', (data) => stderr += data);
+
+        gs.on('close', (code) => {
+            if (code !== 0) {
+                return reject(new Error(stderr || "Compression failed"));
+            }
+            resolve(outputPath);
+        });
+    });
+}
+
+const formatFileSize = (bytes) => {
+    if (bytes >= 1024 * 1024) {
+        return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    }
+    return `${(bytes / 1024).toFixed(2)} KB`;
+};
